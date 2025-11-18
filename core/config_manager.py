@@ -78,9 +78,13 @@ class ConfigManager:
             if key not in self._config:
                 self._config[key] = value
             elif isinstance(value, dict):
+                current_value = self._config.get(key)
+                if not isinstance(current_value, dict):
+                    current_value = {}
+                    self._config[key] = current_value
                 for sub_key, sub_value in value.items():
-                    if sub_key not in self._config[key]:
-                        self._config[key][sub_key] = sub_value
+                    if sub_key not in current_value:
+                        current_value[sub_key] = sub_value
     
     def get(self, key: str, default: Any = None) -> Any:
         """

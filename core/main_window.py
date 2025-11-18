@@ -45,9 +45,10 @@ class MainWindow(QMainWindow):
             self.move(window_config['x'], window_config['y'])
         
         # 初始化其他组件（延迟初始化非关键组件）
-        self.markdown_renderer = MarkdownRenderer()
-        self.windows_integration = WindowsIntegration(self)
+        self.markdown_renderer: Optional[MarkdownRenderer] = None
+        self.windows_integration: Optional[WindowsIntegration] = None
         self.web_view: Optional[QWebEngineView] = None
+        self.preview_placeholder: Optional[QLabel] = None
         self.file_tree: Optional[FileTree] = None
         self.current_file: Optional[Path] = None
         
@@ -94,14 +95,16 @@ class MainWindow(QMainWindow):
         self.file_tree.file_selected.connect(self._on_file_selected)
         self.splitter.addWidget(self.file_tree)
         
-        # 直接创建WebView（不再延迟初始化，提升启动体验）
-        webview_begin = perf_counter()
-        self.web_view = QWebEngineView()
-        self._logger.debug(
-            "启动诊断: QWebEngineView 初始化耗时 %.1f ms",
-            (perf_counter() - webview_begin) * 1000,
-        )
-        self.splitter.addWidget(self.web_view)
+        # 预览占位符（WebView改为延迟初始化）
+        self.preview_placeholder = QLabel('正在准备预览区域…')
+        self.preview_placeholder.setAlignment(Qt.AlignCenter)
+        self.preview_placeholder.setStyleSheet("""
+            QLabel {
+                color: #888888;
+                font-size: 14px;
+            }
+        """)
+        self.splitter.addWidget(self.preview_placeholder)
         
         # 设置分割器比例
         self.splitter.setStretchFactor(0, 0)  # 文件树不拉伸
@@ -133,6 +136,55 @@ class MainWindow(QMainWindow):
         
         # 延迟加载配置内容
         QTimer.singleShot(50, self._load_config)
+
+    def _ensure_web_view(self) -> QWebEngineView:
+        """确保WebView已创建，必要时延迟初始化"""
+        if self.web_view:
+            return self.web_view
+
+        webview_begin = perf_counter()
+        self.web_view = QWebEngineView()
+
+        if self.preview_placeholder:
+            placeholder_index = self.splitter.indexOf(self.preview_placeholder)
+            if placeholder_index != -1:
+                self.splitter.replaceWidget(placeholder_index, self.web_view)
+            else:
+                self.splitter.addWidget(self.web_view)
+            self.preview_placeholder.deleteLater()
+            self.preview_placeholder = None
+        else:
+            self.splitter.addWidget(self.web_view)
+
+        self.splitter.setStretchFactor(1, 1)
+        self._logger.debug(
+            "启动诊断: QWebEngineView 延迟初始化耗时 %.1f ms",
+            (perf_counter() - webview_begin) * 1000,
+        )
+        return self.web_view
+
+    def _get_markdown_renderer(self) -> MarkdownRenderer:
+        """延迟创建Markdown渲染器"""
+        if self.markdown_renderer is None:
+            renderer_begin = perf_counter()
+            self.markdown_renderer = MarkdownRenderer()
+            self._logger.debug(
+                "启动诊断: MarkdownRenderer 延迟初始化耗时 %.1f ms",
+                (perf_counter() - renderer_begin) * 1000,
+            )
+        return self.markdown_renderer
+
+    def _init_windows_integration(self):
+        """延迟初始化Windows集成"""
+        if self.windows_integration is None:
+            init_begin = perf_counter()
+            self.windows_integration = WindowsIntegration(self)
+            self._logger.debug(
+                "启动诊断: WindowsIntegration 延迟初始化耗时 %.1f ms",
+                (perf_counter() - init_begin) * 1000,
+            )
+        if hasattr(self.windows_integration, 'initialize'):
+            self.windows_integration.initialize()
     
     def _create_menu_bar(self):
         """创建菜单栏"""
@@ -306,7 +358,8 @@ class MainWindow(QMainWindow):
         
         # 直接使用HTML，不通过Markdown渲染
         html = welcome_html
-        self.web_view.setHtml(html)
+        web_view = self._ensure_web_view()
+        web_view.setHtml(html)
         self.current_file = None
         self.status_label.setText('就绪')
         self.setWindowTitle('Markdown Reader')
@@ -520,7 +573,8 @@ class MainWindow(QMainWindow):
             saved_scroll = self.config_manager.get_file_scroll_position(str(file_path))
             
             # 渲染文件
-            html = self.markdown_renderer.render_file(
+            renderer = self._get_markdown_renderer()
+            html = renderer.render_file(
                 file_path, theme, body_size, code_size,
                 code_family, code_weight, code_inline_color, code_block_color
             )
@@ -541,7 +595,8 @@ class MainWindow(QMainWindow):
                 html = html.replace('</body>', scroll_script + '</body>')
             
             # 显示HTML
-            self.web_view.setHtml(html)
+            web_view = self._ensure_web_view()
+            web_view.setHtml(html)
             
             # 延迟恢复滚动位置（确保页面已加载）
             if saved_scroll > 0:
@@ -678,17 +733,19 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(50, self._restore_splitter_position)
         
         # 延迟初始化Windows集成（非关键功能）
-        QTimer.singleShot(200, self.windows_integration.initialize)
+        QTimer.singleShot(200, self._init_windows_integration)
     
     def _restore_splitter_position(self):
         """恢复分割器位置"""
         splitter_pos = self.config_manager.get_splitter_position()
-        sizes = self.splitter.sizes()
-        if sizes[0] == 0 and sizes[1] > 0:
-            # 如果文件树宽度为0，设置默认位置
-            total_width = self.splitter.width()
-            default_pos = min(splitter_pos, total_width // 3)
-            self.splitter.setSizes([default_pos, total_width - default_pos])
+        if splitter_pos <= 0:
+            return
+
+        total_width = max(self.splitter.width(), 1)
+        max_tree_width = max(total_width // 3, 1)
+        target_pos = min(splitter_pos, max_tree_width)
+        other_pane = max(total_width - target_pos, 1)
+        self.splitter.setSizes([target_pos, other_pane])
     
     def closeEvent(self, event):
         """窗口关闭事件"""

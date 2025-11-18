@@ -5,11 +5,8 @@ Markdown渲染器模块
 import re
 import markdown
 from pathlib import Path
-from pygments import highlight
-from pygments.lexers import get_lexer_by_name, guess_lexer_for_filename
-from pygments.formatters import HtmlFormatter
-from pygments.util import ClassNotFound
-from .resource_path import get_assets_dir
+from typing import Tuple
+from .resource_path import get_assets_dir, get_resource_path
 from .windows_integration import WindowsIntegration
 from .logger_util import get_logger, log_error
 
@@ -19,7 +16,6 @@ class MarkdownRenderer:
     
     def __init__(self):
         self._css_cache = {}
-        self._pygments_formatter = None
         self._logger = get_logger(__name__)
     
     def _load_css(self, theme: str) -> str:
@@ -47,6 +43,35 @@ class MarkdownRenderer:
                 log_error("加载CSS文件失败", e, self._logger)
         
         return ''
+
+    def _build_code_font_css(self) -> str:
+        """
+        构建代码字体的@font-face定义，使用ttf目录中的字体文件
+        Returns:
+            CSS字符串，如果字体文件不存在则返回空字符串
+        """
+        font_path = get_resource_path('ttf/jetbrains-mono-regular.ttf')
+        if not font_path.exists():
+            self._logger.warning("代码字体文件不存在: %s", font_path)
+            return ''
+        try:
+            font_uri = font_path.resolve().as_uri()
+        except ValueError as exc:
+            self._logger.error("无法解析代码字体路径: %s", exc)
+            return ''
+
+        return f"""
+@font-face {{
+    font-family: 'MDToolCode';
+    src: url('{font_uri}') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+}}
+pre,
+pre code {{
+    font-family: 'MDToolCode', Consolas, 'Courier New', monospace !important;
+}}
+"""
     
     def _get_actual_theme(self, theme_setting: str) -> str:
         """
@@ -106,11 +131,6 @@ class MarkdownRenderer:
                 rf'\1{code_font_family}',
                 css_content
             )
-            css_content = re.sub(
-                r'(\.highlight pre code\s*\{[^}]*font-family:\s*)[^;]+',
-                rf'\1{code_font_family}',
-                css_content
-            )
         
         # 应用代码字体粗细
         if code_font_weight:
@@ -145,21 +165,6 @@ class MarkdownRenderer:
                 rf'\1{code_font_weight}',
                 css_content
             )
-            # 对于.highlight pre code，如果不存在font-weight，添加它
-            highlight_match = re.search(r'\.highlight pre code\s*\{[^}]*\}', css_content, re.DOTALL)
-            if highlight_match and 'font-weight' not in highlight_match.group(0):
-                css_content = re.sub(
-                    r'(\.highlight pre code\s*\{[^}]*?)(;)',
-                    rf'\1    font-weight: {code_font_weight};\2',
-                    css_content,
-                    flags=re.DOTALL
-                )
-            else:
-                css_content = re.sub(
-                    r'(\.highlight pre code\s*\{[^}]*font-weight:\s*)[^;]+',
-                    rf'\1{code_font_weight}',
-                    css_content
-                )
             
             # 确保所有code选择器都有font-weight（如果不存在则添加）
             # code { ... }
@@ -197,11 +202,6 @@ class MarkdownRenderer:
             rf'\1{code_font_size}px',
             css_content
         )
-        css_content = re.sub(
-            r'(\.highlight pre code\s*\{[^}]*font-size:\s*)14px',
-            rf'\1{code_font_size}px',
-            css_content
-        )
         
         # 应用代码颜色
         if code_inline_color:
@@ -229,46 +229,8 @@ class MarkdownRenderer:
                 rf'\1{code_block_color}',
                 css_content
             )
-            css_content = re.sub(
-                r'(\.highlight pre code\s*\{[^}]*color:\s*)[^;]+',
-                rf'\1{code_block_color}',
-                css_content
-            )
         
         return css_content
-    
-    def _highlight_code(self, code: str, lang: str = None, filename: str = None) -> str:
-        """
-        代码语法高亮（扩展接口：可用于自定义代码高亮逻辑）
-        
-        注意：当前由markdown的codehilite扩展处理代码高亮，
-        此方法保留作为扩展接口，供需要自定义高亮逻辑时使用。
-        
-        Args:
-            code: 代码内容
-            lang: 语言名称
-            filename: 文件名（用于猜测语言）
-            
-        Returns:
-            高亮后的HTML
-        """
-        if not self._pygments_formatter:
-            self._pygments_formatter = HtmlFormatter(
-                nowrap=True,
-                style='default'
-            )
-        
-        try:
-            if lang:
-                lexer = get_lexer_by_name(lang, stripall=True)
-            elif filename:
-                lexer = guess_lexer_for_filename(filename, code)
-            else:
-                lexer = get_lexer_by_name('text', stripall=True)
-        except ClassNotFound:
-            lexer = get_lexer_by_name('text', stripall=True)
-        
-        return highlight(code, lexer, self._pygments_formatter)
     
     def _get_markdown_extensions(self):
         """
@@ -281,7 +243,6 @@ class MarkdownRenderer:
             'fenced_code',  # 支持 ``` 代码块
             'tables',
             'toc',
-            'codehilite',  # 代码语法高亮（需要fenced_code支持）
             'nl2br',
             'sane_lists',
             'attr_list',
@@ -291,12 +252,6 @@ class MarkdownRenderer:
         ]
         
         extension_configs = {
-            'codehilite': {
-                'use_pygments': True,
-                'css_class': 'highlight',
-                'linenums': False,  # 不显示行号
-                'guess_lang': True  # 自动猜测语言
-            },
             'fenced_code': {
                 'lang_prefix': 'language-'  # 语言前缀
             }
@@ -322,7 +277,24 @@ class MarkdownRenderer:
         )
         return md.convert(text)
     
-    def _generate_html_document(self, html_body: str, css_content: str) -> str:
+    def _get_highlight_assets(self, theme: str) -> Tuple[str, str]:
+        """
+        获取highlight.js静态资源
+        
+        Args:
+            theme: 实际主题（light/dark）
+        
+        Returns:
+            (css_url, js_url)
+        """
+        base_url = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0"
+        css_theme = "styles/github.min.css" if theme == 'light' else "styles/github-dark.min.css"
+        css_url = f"{base_url}/{css_theme}"
+        js_url = f"{base_url}/highlight.min.js"
+        return css_url, js_url
+    
+    def _generate_html_document(self, html_body: str, css_content: str,
+                                highlight_assets: Tuple[str, str]) -> str:
         """
         生成完整的HTML文档（扩展接口：可被子类重写以自定义HTML结构）
         
@@ -333,6 +305,21 @@ class MarkdownRenderer:
         Returns:
             完整的HTML文档
         """
+        highlight_css, highlight_js = highlight_assets
+        highlight_head = f"""
+    <link rel="stylesheet" href="{highlight_css}">
+    <script src="{highlight_js}" defer></script>
+""" if highlight_assets else ""
+        highlight_bootstrap = """
+    <script>
+        window.addEventListener('DOMContentLoaded', function () {
+            if (window.hljs && window.hljs.highlightAll) {
+                window.hljs.highlightAll();
+            }
+        });
+    </script>
+""" if highlight_assets else ""
+        
         return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -341,9 +328,11 @@ class MarkdownRenderer:
     <style>
         {css_content}
     </style>
+{highlight_head}
 </head>
 <body>
     {html_body}
+{highlight_bootstrap}
 </body>
 </html>"""
     
@@ -382,9 +371,15 @@ class MarkdownRenderer:
             code_font_family, code_font_weight,
             code_inline_color, code_block_color
         )
+
+        custom_code_font_css = self._build_code_font_css()
+        if custom_code_font_css:
+            css_content = f"{custom_code_font_css}\n{css_content}"
+        
+        highlight_assets = self._get_highlight_assets(theme)
         
         # 生成完整HTML
-        return self._generate_html_document(html_body, css_content)
+        return self._generate_html_document(html_body, css_content, highlight_assets)
     
     def render_file(self, file_path: Path, theme_setting: str = 'auto', 
                    body_font_size: int = 16, code_font_size: int = 14,
