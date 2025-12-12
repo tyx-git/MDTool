@@ -45,39 +45,6 @@
   - markdown 3.5
   - pywin32 306
 
-## 安装指南
-
-### 方法一：使用虚拟环境（推荐）
-
-```bash
-# 克隆项目
-git clone <repository-url>
-cd MDTool
-
-# 创建虚拟环境
-python -m venv .venv
-
-# 激活虚拟环境
-# Windows CMD:
-.venv\Scripts\activate.bat
-# Windows PowerShell:
-.venv\Scripts\Activate.ps1
-
-# 安装依赖
-pip install -r requirements.txt
-```
-
-### 方法二：直接安装
-
-```bash
-# 克隆项目
-git clone <repository-url>
-cd MDTool
-
-# 安装依赖
-pip install -r requirements.txt
-```
-
 ## 使用方法
 
 ### 启动应用
@@ -213,8 +180,4 @@ MDTool/
 本项目采用 MIT 许可证，详情请见 [LICENSE](LICENSE) 文件。
 
 ## 致谢
-
-- [PyQt5](https://pypi.org/project/PyQt5/) - GUI框架
-- [markdown](https://pypi.org/project/Markdown/) - Markdown解析
-- [highlight.js](https://highlightjs.org/) - 代码高亮
 - [JetBrains Mono](https://www.jetbrains.com/lp/mono/) - 等宽字体
